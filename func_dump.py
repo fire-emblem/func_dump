@@ -7,7 +7,6 @@ func_dump — 函数调用录制(dump)与打印(print)工具
 环境变量:
     FUNC_DUMP_MODE : 支持 dump / print / dump,print / both
     FUNC_DUMP_DIR  : 录制输出目录，默认 ./func_dumps
-    FUNC_DUMP_SINK : 输出位置，memory 或 file（默认 memory）
 """
 
 import os
@@ -17,6 +16,10 @@ import inspect
 import functools
 from pathlib import Path
 from datetime import datetime
+
+# Ensure registry is shared when running as a script.
+if __name__ == "__main__" and "func_dump" not in sys.modules:
+    sys.modules["func_dump"] = sys.modules[__name__]
 
 try:
     import torch
@@ -28,7 +31,6 @@ except ImportError:
 # Registry
 # =========================================================================
 _registry = {}
-_memory_records = []
 
 
 def register(fn):
@@ -120,7 +122,10 @@ def _make_random_tensor(shape, dtype_str, device):
     if dtype_str in _FLOAT_DTYPES:
         t = torch.randn(shape, dtype=torch.float32, device=device).to(dtype)
     elif dtype_str in _INT_DTYPES:
-        t = torch.randint(-10, 10, shape, dtype=dtype, device=device)
+        if dtype_str == "torch.uint8":
+            t = torch.randint(0, 256, shape, dtype=dtype, device=device)
+        else:
+            t = torch.randint(-10, 10, shape, dtype=dtype, device=device)
     elif dtype_str == "torch.bool":
         t = torch.randint(0, 2, shape, dtype=torch.bool, device=device)
     else:
@@ -186,34 +191,27 @@ def _print_call(fn_key, named_args, ret):
 # =========================================================================
 # Dump — 序列化到 JSONL 文件
 # =========================================================================
-def dump_call(fn, args, kwargs, ret, out_path=None, sink=None):
-    """将一次函数调用的元信息记录到内存或 JSONL 文件。"""
+def dump_call(fn, args, kwargs, ret, out_path=None):
+    """将一次函数调用的元信息序列化到 JSONL 文件。"""
     fn_key = f"{fn.__module__}.{fn.__qualname__}"
     named_args = _bind_args(fn, args, kwargs)
 
-    if sink is None:
-        sink = os.environ.get("FUNC_DUMP_SINK", "memory").strip().lower()
-    if sink not in {"memory", "file"}:
-        raise ValueError("FUNC_DUMP_SINK must be 'memory' or 'file'")
+    if out_path is None:
+        dump_dir = _get_dump_dir()
+        out_path = dump_dir / "calls.jsonl"
+    else:
+        out_path = Path(out_path)
+        dump_dir = out_path.parent
+
+    dump_dir.mkdir(parents=True, exist_ok=True)
 
     serialized_args = {name: _serialize_value(val) for name, val in named_args.items()}
     serialized_ret = _serialize_value(ret)
 
-    if sink == "file":
-        if out_path is None:
-            dump_dir = _get_dump_dir()
-            out_path = dump_dir / "calls.jsonl"
-        else:
-            out_path = Path(out_path)
-            dump_dir = out_path.parent
-        dump_dir.mkdir(parents=True, exist_ok=True)
-
-        idx = 0
-        if out_path.exists():
-            with open(out_path, "r") as f:
-                idx = sum(1 for _ in f)
-    else:
-        idx = len(_memory_records)
+    idx = 0
+    if out_path.exists():
+        with open(out_path, "r") as f:
+            idx = sum(1 for _ in f)
 
     record = {
         "idx": idx,
@@ -223,21 +221,16 @@ def dump_call(fn, args, kwargs, ret, out_path=None, sink=None):
         "ts": datetime.now().isoformat(),
     }
 
-    if sink == "file":
-        with open(out_path, "a") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    else:
-        _memory_records.append(record)
+    with open(out_path, "a") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return record
 
 
 # =========================================================================
 # Load / Replay
 # =========================================================================
-def load_records(path=None):
-    """加载调用记录。path=None 时从内存加载。"""
-    if path is None:
-        return list(_memory_records)
+def load_records(path):
+    """从 JSONL 文件加载所有调用记录。"""
     records = []
     with open(path, "r") as f:
         for line in f:
@@ -252,18 +245,56 @@ def replay_call(record, device_override=None):
     fn_key = record["func"]
     fn = _registry.get(fn_key)
     if fn is None:
-        raise KeyError(
-            f"Function '{fn_key}' not found in registry. "
-            f"Available: {list(_registry.keys())}"
-        )
-    kwargs = {
+        # Fallback: match by qualname if module differs (e.g. recorded as __main__)
+        try:
+            _, qualname = fn_key.rsplit(".", 1)
+        except ValueError:
+            qualname = fn_key
+        candidates = [k for k in _registry.keys() if k.endswith("." + qualname)]
+        if len(candidates) == 1:
+            fn = _registry[candidates[0]]
+        elif len(candidates) == 0:
+            raise KeyError(
+                f"Function '{fn_key}' not found in registry. "
+                f"Available: {list(_registry.keys())}"
+            )
+        else:
+            raise KeyError(
+                f"Function '{fn_key}' not found uniquely. "
+                f"Candidates: {candidates}"
+            )
+    named = {
         name: _deserialize_value(val, device_override)
         for name, val in record["args"].items()
     }
-    return fn(**kwargs)
+    try:
+        sig = inspect.signature(fn)
+        args_list = []
+        kwargs_dict = {}
+        for name, param in sig.parameters.items():
+            if name not in named:
+                continue
+            val = named[name]
+            if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
+                args_list.append(val)
+            elif param.kind == inspect.Parameter.VAR_POSITIONAL:
+                if isinstance(val, (list, tuple)):
+                    args_list.extend(val)
+                else:
+                    args_list.append(val)
+            elif param.kind == inspect.Parameter.KEYWORD_ONLY:
+                kwargs_dict[name] = val
+            elif param.kind == inspect.Parameter.VAR_KEYWORD:
+                if isinstance(val, dict):
+                    kwargs_dict.update(val)
+                else:
+                    kwargs_dict[name] = val
+        return fn(*args_list, **kwargs_dict)
+    except (TypeError, ValueError):
+        return fn(**named)
 
 
-def replay_all(path=None, device_override=None):
+def replay_all(path, device_override=None):
     """回放所有记录，返回 [(idx, func_key, result_or_exception), ...]。"""
     records = load_records(path)
     results = []
@@ -344,8 +375,19 @@ def _cli_show(jsonl_path):
 
 def _cli_replay(jsonl_path, modules, device):
     import importlib
+    import importlib.util
+    import os
     for mod_name in modules:
-        importlib.import_module(mod_name)
+        if mod_name.endswith(".py") or os.path.sep in mod_name:
+            module_name = f"_func_dump_mod_{len(sys.modules)}"
+            spec = importlib.util.spec_from_file_location(module_name, mod_name)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"cannot load module from path: {mod_name}")
+            loaded = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = loaded
+            spec.loader.exec_module(loaded)
+        else:
+            importlib.import_module(mod_name)
 
     results = replay_all(jsonl_path, device_override=device)
     for idx, fn_key, ret in results:

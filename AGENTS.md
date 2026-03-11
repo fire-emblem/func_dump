@@ -14,7 +14,7 @@
 - CLI 使用：
   - 帮助：`python func_dump.py --help`
   - 查看录制：`python func_dump.py show ./func_dumps/calls.jsonl`
-  - 回放录制：`python func_dump.py replay ./func_dumps/calls.jsonl -m your.module --device cpu`
+  - 回放录制：`python func_dump.py replay ./func_dumps/calls.jsonl -m your.module`
   - 典型录制：`FUNC_DUMP_MODE=both FUNC_DUMP_DIR=./func_dumps python your_script.py`
 
 ## 代码风格与命名
@@ -32,4 +32,4 @@
 
 ## 安全与配置
 - Dump 为 JSONL；对不可序列化值会写入 `repr()`，避免录制密钥/隐私数据。
-- 环境变量：`FUNC_DUMP_MODE=dump|print|both`，`FUNC_DUMP_DIR=./path/to/output`，`FUNC_DUMP_SINK=memory|file`
+- 环境变量：`FUNC_DUMP_MODE=dump|print|both`，`FUNC_DUMP_DIR=./path/to/output`

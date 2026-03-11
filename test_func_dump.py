@@ -17,26 +17,42 @@ from unittest import mock
 import torch
 import pytest
 
-# 确保能导入
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-from deep_gemm.testing.func_dump import (
-    register,
-    _registry,
-    _memory_records,
-    _parse_modes,
-    _bind_args,
-    _serialize_value,
-    _deserialize_value,
-    _make_random_tensor,
-    _format_short,
-    _print_call,
-    dump_call,
-    load_records,
-    replay_call,
-    replay_all,
-    auto_dump,
-)
+# 优先从项目包路径导入；若不存在则回退到本目录的 func_dump.py
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from deep_gemm.testing.func_dump import (  # type: ignore
+        register,
+        _registry,
+        _parse_modes,
+        _bind_args,
+        _serialize_value,
+        _deserialize_value,
+        _make_random_tensor,
+        _format_short,
+        _print_call,
+        dump_call,
+        load_records,
+        replay_call,
+        replay_all,
+        auto_dump,
+    )
+except ModuleNotFoundError:
+    from func_dump import (  # type: ignore
+        register,
+        _registry,
+        _parse_modes,
+        _bind_args,
+        _serialize_value,
+        _deserialize_value,
+        _make_random_tensor,
+        _format_short,
+        _print_call,
+        dump_call,
+        load_records,
+        replay_call,
+        replay_all,
+        auto_dump,
+    )
 
 
 # =========================================================================
@@ -48,8 +64,6 @@ def clean_env():
     saved_registry = dict(_registry)
     saved_mode = os.environ.pop("FUNC_DUMP_MODE", None)
     saved_dir = os.environ.pop("FUNC_DUMP_DIR", None)
-    saved_sink = os.environ.pop("FUNC_DUMP_SINK", None)
-    _memory_records.clear()
     yield
     _registry.clear()
     _registry.update(saved_registry)
@@ -61,11 +75,6 @@ def clean_env():
         os.environ["FUNC_DUMP_DIR"] = saved_dir
     else:
         os.environ.pop("FUNC_DUMP_DIR", None)
-    if saved_sink is not None:
-        os.environ["FUNC_DUMP_SINK"] = saved_sink
-    else:
-        os.environ.pop("FUNC_DUMP_SINK", None)
-    _memory_records.clear()
 
 
 @pytest.fixture
@@ -167,12 +176,12 @@ class TestBindArgs:
         assert result["mode"] == "sum"
 
     def test_fallback_for_uninspectable(self):
-        # 用 lambda 模拟无法 inspect 的情况不太好，
-        # 改用 mock 让 signature 抛异常
+        # 用 mock 让 inspect.signature 抛异常，触发 fallback
         fn = mock.MagicMock()
         fn.__module__ = "test"
         fn.__qualname__ = "mock_fn"
-        result = _bind_args(fn, (10, 20), {"k": "v"})
+        with mock.patch("inspect.signature", side_effect=TypeError):
+            result = _bind_args(fn, (10, 20), {"k": "v"})
         assert result["__pos_0"] == 10
         assert result["__pos_1"] == 20
         assert result["k"] == "v"
@@ -560,7 +569,6 @@ class TestAutoDecorator:
     def test_dump_mode_wraps(self, tmp_dir):
         os.environ["FUNC_DUMP_MODE"] = "dump"
         os.environ["FUNC_DUMP_DIR"] = str(tmp_dir)
-        os.environ["FUNC_DUMP_SINK"] = "file"
 
         def add_fn(a, b):
             return a + b
@@ -595,7 +603,6 @@ class TestAutoDecorator:
     def test_both_mode(self, tmp_dir, capsys):
         os.environ["FUNC_DUMP_MODE"] = "both"
         os.environ["FUNC_DUMP_DIR"] = str(tmp_dir)
-        os.environ["FUNC_DUMP_SINK"] = "file"
 
         def mul_fn(a, b):
             return a * b
@@ -616,7 +623,6 @@ class TestAutoDecorator:
     def test_dump_print_comma(self, tmp_dir, capsys):
         os.environ["FUNC_DUMP_MODE"] = "dump,print"
         os.environ["FUNC_DUMP_DIR"] = str(tmp_dir)
-        os.environ["FUNC_DUMP_SINK"] = "file"
 
         def div_fn(a, b):
             return a / b
@@ -655,7 +661,6 @@ class TestAutoDecorator:
     def test_multiple_calls_dump(self, tmp_dir):
         os.environ["FUNC_DUMP_MODE"] = "dump"
         os.environ["FUNC_DUMP_DIR"] = str(tmp_dir)
-        os.environ["FUNC_DUMP_SINK"] = "file"
 
         def inc_fn(x):
             return x + 1
@@ -678,7 +683,6 @@ class TestEndToEnd:
     def test_full_cycle_tensor(self, tmp_dir):
         os.environ["FUNC_DUMP_MODE"] = "dump"
         os.environ["FUNC_DUMP_DIR"] = str(tmp_dir)
-        os.environ["FUNC_DUMP_SINK"] = "file"
 
         def matmul_fn(a, b):
             return a @ b
@@ -699,7 +703,6 @@ class TestEndToEnd:
     def test_full_cycle_mixed_args(self, tmp_dir):
         os.environ["FUNC_DUMP_MODE"] = "dump"
         os.environ["FUNC_DUMP_DIR"] = str(tmp_dir)
-        os.environ["FUNC_DUMP_SINK"] = "file"
 
         def mixed_fn(tensor, count, name="default", flag=True):
             if flag:
@@ -725,7 +728,6 @@ class TestEndToEnd:
     def test_full_cycle_replay_all(self, tmp_dir):
         os.environ["FUNC_DUMP_MODE"] = "dump"
         os.environ["FUNC_DUMP_DIR"] = str(tmp_dir)
-        os.environ["FUNC_DUMP_SINK"] = "file"
 
         def add2(a, b):
             return a + b

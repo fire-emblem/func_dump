@@ -1,0 +1,4 @@
+__pycache__/
+.pytest_cache/
+func_dumps/
+func_dumps_tmp/
