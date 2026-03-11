@@ -105,6 +105,33 @@ def validate_args(
     return "success"
 
 
+@auto_dump
+def mixed_types(
+    tensor,
+    cuda_tensor=None,
+    number=1,
+    ratio=0.1,
+    text="hello",
+    flag=True,
+    tags=None,
+    payload=None,
+    pair=(1, 2),
+    items=(1, "a", None),
+):
+    return {
+        "tensor": tensor,
+        "cuda_tensor": cuda_tensor,
+        "number": number,
+        "ratio": ratio,
+        "text": text,
+        "flag": flag,
+        "tags": tags,
+        "payload": payload,
+        "pair": pair,
+        "items": items,
+    }
+
+
 def _make_inputs():
     if HAS_TORCH:
         a = torch.randn(2, 3, dtype=torch.float16)
@@ -154,33 +181,6 @@ def main():
         None,
     )
     print("validate output:", validate_out)
-
-    # Additional function types and params
-    @auto_dump
-    def mixed_types(
-        tensor,
-        cuda_tensor=None,
-        number=1,
-        ratio=0.1,
-        text="hello",
-        flag=True,
-        tags=None,
-        payload=None,
-        pair=(1, 2),
-        items=(1, "a", None),
-    ):
-        return {
-            "tensor": tensor,
-            "cuda_tensor": cuda_tensor,
-            "number": number,
-            "ratio": ratio,
-            "text": text,
-            "flag": flag,
-            "tags": tags,
-            "payload": payload,
-            "pair": pair,
-            "items": items,
-        }
 
     mixed_out = mixed_types(
         a,
